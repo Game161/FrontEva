@@ -13,41 +13,118 @@ const EvaluateeDetails = () => {
     const { id } = useParams();
     const [assignment, setAssignment] = useState(null);
     const [topics, setTopics] = useState([]);
+    const [evidenceList, setEvidenceList] = useState([]);
     const [activeTab, setActiveTab] = useState(1);
     const [loading, setLoading] = useState(true);
+    const [uploadingId, setUploadingId] = useState(null);
 
     useEffect(() => {
+        let isMounted = true;
+
         const fetchEvalData = async () => {
             try {
                 setLoading(true);
-                // Assuming we fetch Evaluatee assignment details and the associated topics structure here
+                // Fetch Evaluatee assignment details and the associated topics structure
                 const resAssign = await api.get(`/me/evaluation/${id}`).catch(() => ({ data: null }));
-                // Mock data structure fallback based on prior implementations for testing PDF specs
-                const data = resAssign.data || {
-                    id,
-                    status: 'IN_PROGRESS', // IN_PROGRESS, COMPLETED
-                    evaluation: { name: 'การประเมินประจำปี 2569 รอบที่ 1', startAt: '2026-01-01', endAt: '2026-06-30' },
-                    evaluator: { name: 'นาย ผู้ประเมิน ทดสอบ' },
-                    results: []
-                };
-                setAssignment(data);
 
-                // Fetch Evaluation Topics
-                const fetchedTopics = data.evaluation?.topics || [
-                    { id: 1, name: 'ส่วนที่ 1 ด้านคุณลักษณะ', indicators: [{ id: 1, name: 'ความตรงต่อเวลา', type: 'SCALE_1_4', weight: 1, requireEvidence: false }, { id: 2, name: 'ความรับผิดชอบ', type: 'SCALE_1_4', weight: 2, requireEvidence: true }] },
-                    { id: 2, name: 'ส่วนที่ 2 ด้านผลปฏิบัติงาน', indicators: [{ id: 3, name: 'ส่งมอบงานตรงเวลา', type: 'YES_NO', weight: 1.5, requireEvidence: true }] }
-                ];
-                setTopics(fetchedTopics);
+                // Also fetch all evidence related to this user 
+                const resEvidence = await api.get(`/me/evidence`).catch(() => ({ data: [] }));
 
+                if (isMounted) {
+                    const data = resAssign.data;
+                    setAssignment(data);
+
+                    if (data && data.evaluation) {
+                        setTopics(data.evaluation.topics || []);
+                    }
+
+                    setEvidenceList(resEvidence.data || []);
+                }
             } catch (error) {
                 console.error("Failed to fetch assignment details", error);
-                Swal.fire('ข้อผิดพลาด', 'ไม่สามารถโหลดข้อมูลการประเมินได้', 'error');
+                if (isMounted) Swal.fire('ข้อผิดพลาด', 'ไม่สามารถโหลดข้อมูลการประเมินได้', 'error');
             } finally {
-                setLoading(false);
+                if (isMounted) setLoading(false);
             }
         };
         fetchEvalData();
+        return () => { isMounted = false };
     }, [id]);
+
+    const handleEvidenceUpload = async (indicatorId, file) => {
+        if (!file) return;
+
+        // Basic validation
+        if (file.size > 10 * 1024 * 1024) { // 10MB Limit
+            return Swal.fire('ข้อผิดพลาด', 'กรุณาอัปโหลดไฟล์ขนาดไม่เกิน 10MB', 'warning');
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('indicatorId', indicatorId);
+
+        try {
+            setUploadingId(indicatorId);
+            const res = await api.post('/me/evidence', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data'
+                }
+            });
+
+            // Update local evidence list
+            setEvidenceList(prev => {
+                const existingIndex = prev.findIndex(e => e.id === res.data.id || e.indicatorId === indicatorId);
+                if (existingIndex >= 0) {
+                    const newList = [...prev];
+                    newList[existingIndex] = res.data;
+                    return newList;
+                }
+                return [...prev, res.data];
+            });
+
+            Swal.fire({
+                icon: 'success',
+                title: 'สำเร็จ',
+                text: 'อัปโหลดหลักฐานเรียบร้อยแล้ว',
+                timer: 1500,
+                showConfirmButton: false
+            });
+        } catch (error) {
+            console.error('Upload Error:', error);
+            Swal.fire('ข้อผิดพลาด', 'ไม่สามารถอัปโหลดไฟล์ได้', 'error');
+        } finally {
+            setUploadingId(null);
+        }
+    };
+
+    const handleEvidenceDelete = async (evidenceId) => {
+        const result = await Swal.fire({
+            title: 'ยืนยันการลบ?',
+            text: "คุณต้องการลบเอกสารหลักฐานนี้ใช่หรือไม่",
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#d33',
+            cancelButtonColor: '#3085d6',
+            confirmButtonText: 'ใช่, ลบเลย!',
+            cancelButtonText: 'ยกเลิก'
+        });
+
+        if (result.isConfirmed) {
+            try {
+                await api.delete(`/me/evidence/${evidenceId}`);
+                setEvidenceList(prev => prev.filter(e => e.id !== evidenceId));
+                Swal.fire({
+                    icon: 'success',
+                    title: 'ลบสำเร็จ',
+                    showConfirmButton: false,
+                    timer: 1500
+                });
+            } catch (error) {
+                console.error("Delete Error", error);
+                Swal.fire('ข้อผิดพลาด', 'ไม่สามารถลบไฟล์ได้', 'error');
+            }
+        }
+    };
 
     if (loading) return <div className="p-8 text-center text-gray-500">กำลังโหลด...</div>;
     if (!assignment) return <div className="p-8 text-center text-red-500">ไม่พบข้อมูล</div>;
@@ -113,43 +190,67 @@ const EvaluateeDetails = () => {
                                 <h2 className="text-xl font-bold text-gray-800">ส่วนที่ {tIdx + 1}: {topic.name}</h2>
                             </div>
                             <div className="p-4 space-y-6">
-                                {topic.indicators.map((ind, iIdx) => (
-                                    <div key={ind.id} className="flex flex-col md:flex-row gap-6 p-4 rounded-lg border border-gray-100 bg-white">
-                                        <div className="flex-1">
-                                            <h3 className="font-bold text-gray-800 text-lg mb-2">{tIdx + 1}.{iIdx + 1} {ind.name}</h3>
-                                            <div className="flex gap-2">
-                                                <Badge variant={ind.type === 'SCALE_1_4' ? 'primary' : 'success'}>
-                                                    {ind.type === 'SCALE_1_4' ? 'ระดับ 1-4' : 'ผ่าน/ไม่ผ่าน'}
-                                                </Badge>
-                                                <Badge variant="gray">น้ำหนัก {ind.weight || 1}</Badge>
+                                {topic.indicators.map((ind, iIdx) => {
+                                    // Find if there is evidence for this indicator
+                                    const indEvidence = evidenceList.find(e => e.indicatorId === ind.id);
+
+                                    return (
+                                        <div key={ind.id} className="flex flex-col md:flex-row gap-6 p-4 rounded-lg border border-gray-100 bg-white">
+                                            <div className="flex-1">
+                                                <h3 className="font-bold text-gray-800 text-lg mb-2">{tIdx + 1}.{iIdx + 1} {ind.name}</h3>
+                                                <div className="flex gap-2">
+                                                    <Badge variant={ind.type === 'SCALE_1_4' ? 'primary' : 'success'}>
+                                                        {ind.type === 'SCALE_1_4' ? 'ระดับ 1-4' : 'ผ่าน/ไม่ผ่าน'}
+                                                    </Badge>
+                                                    <Badge variant="gray">น้ำหนัก {ind.weight || 1}</Badge>
+                                                </div>
+                                            </div>
+                                            <div className="w-full md:w-1/3 min-w-[300px] border-l md:border-l-2 border-gray-100 md:pl-6">
+                                                {ind.requireEvidence ? (
+                                                    <div className="space-y-3">
+                                                        <label className="block text-sm font-medium text-gray-700">อัปโหลดหลักฐานประกอบ</label>
+                                                        <div className="flex items-center justify-center w-full">
+                                                            <label htmlFor={`dropzone-file-${ind.id}`} className={`flex flex-col items-center justify-center w-full h-24 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors ${uploadingId === ind.id ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                                                                <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                                                                    <UploadCloud size={24} className="text-gray-400 mb-2" />
+                                                                    <p className="mb-1 text-sm text-gray-500">
+                                                                        <span className="font-semibold">{uploadingId === ind.id ? 'กำลังอัปโหลด...' : 'คลิกเพื่ออัปโหลด'}</span>
+                                                                    </p>
+                                                                </div>
+                                                                <input
+                                                                    id={`dropzone-file-${ind.id}`}
+                                                                    type="file"
+                                                                    className="hidden"
+                                                                    disabled={uploadingId === ind.id}
+                                                                    onChange={(e) => handleEvidenceUpload(ind.id, e.target.files[0])}
+                                                                />
+                                                            </label>
+                                                        </div>
+                                                        {/* Uploaded file indicator */}
+                                                        {indEvidence && (
+                                                            <div className="mt-2 text-sm text-green-600 flex items-center justify-between bg-green-50 p-2 rounded border border-green-100">
+                                                                <div className="flex items-center gap-1 overflow-hidden">
+                                                                    <CheckCircle size={14} className="shrink-0" />
+                                                                    <span className="truncate" title={indEvidence.filePath.split('\\').pop().split('/').pop()}>อัปโหลดแล้ว</span>
+                                                                </div>
+                                                                <button
+                                                                    onClick={() => handleEvidenceDelete(indEvidence.id)}
+                                                                    className="text-red-500 hover:text-red-700 text-xs font-medium ml-2 shrink-0"
+                                                                >
+                                                                    ลบ
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex flex-col items-center justify-center h-full text-gray-400 italic">
+                                                        ส่วนนี้ไม่จำเป็นต้องแนบหลักฐาน
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
-                                        <div className="w-full md:w-1/3 min-w-[300px] border-l md:border-l-2 border-gray-100 md:pl-6">
-                                            {ind.requireEvidence ? (
-                                                <div className="space-y-3">
-                                                    <label className="block text-sm font-medium text-gray-700">อัปโหลดหลักฐานประกอบ</label>
-                                                    <div className="flex items-center justify-center w-full">
-                                                        <label htmlFor={`dropzone-file-${ind.id}`} className="flex flex-col items-center justify-center w-full h-24 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
-                                                            <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                                                                <UploadCloud size={24} className="text-gray-400 mb-2" />
-                                                                <p className="mb-1 text-sm text-gray-500"><span className="font-semibold">คลิกเพื่ออัปโหลด</span></p>
-                                                            </div>
-                                                            <input id={`dropzone-file-${ind.id}`} type="file" className="hidden" />
-                                                        </label>
-                                                    </div>
-                                                    {/* Example placeholder for uploaded file */}
-                                                    <div className="mt-2 text-sm text-green-600 flex items-center gap-1">
-                                                        <CheckCircle size={14} /> <a href="#" className="hover:underline">หลักฐาน_{ind.id}.pdf</a>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="flex flex-col items-center justify-center h-full text-gray-400 italic">
-                                                    ส่วนนี้ไม่จำเป็นต้องแนบหลักฐาน
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </Card>
                     ))}
